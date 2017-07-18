@@ -1,0 +1,6 @@
+LXC setup
+
+put stuff in /etc/default/lxc-net
+put sutff in /etc/lxc/default.conf
+
+restart al
