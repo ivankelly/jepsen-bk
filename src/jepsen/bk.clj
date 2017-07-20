@@ -96,7 +96,8 @@
   "Tear down zookeeper on a node"
   [node]
   (c/exec :service :zookeeper :stop)
-  (c/exec :rm :-rf "/var/lib/zookeeper"))
+  (c/exec :rm :-rf "/var/lib/zookeeper")
+  (c/exec :rm "/var/log/zookeeper/zookeeper.log"))
 
 (defn- zk-connect-string
   "Build a zookeeper connect string from a set of servers"
@@ -128,7 +129,7 @@
       (c/exec "bin/bookkeeper" :shell :metaformat
               :--force :--nonInteractive))
     (c/exec :mkdir :-p "logs")
-    (cu/start-daemon! {:logfile "logs/stderr.log"
+    (cu/start-daemon! {:logfile "logs/bookkeeper.stdout.log"
                        :pidfile "logs/bookie.pid"
                        :chdir "/opt/bookkeeper"}
                       "bin/bookkeeper" "bookie")))
@@ -140,7 +141,7 @@
   (binding [c/*dir* "/opt/bookkeeper"]
     (cu/stop-daemon! "logs/bookie.pid"))
   (try
-    (c/exec :pkill :-f :-9 "bookie")
+    (c/exec :pkill :-f :-9 "bookkeeper")
     (catch RuntimeException e)) ; ignore
   (c/exec :rm :-rf "/opt/bk-journal")
   (c/exec :rm :-rf "/opt/bk-data"))
@@ -148,7 +149,8 @@
 (defn db
   "Install bookkeeper and zookeeper on nodes"
   [version]
-  (reify db/DB
+  (reify
+    db/DB
     (setup! [a test node]
       (info node "installing something" version)
       (let [nodes (:nodes test)
@@ -157,7 +159,8 @@
         (if (contains? zk-nodes node)
           (install-zk! zk-nodes node))
         (if (contains? bk-nodes node)
-          (install-bk! version bk-nodes zk-nodes node))))
+          (install-bk! version bk-nodes zk-nodes node)))
+      (Thread/sleep 30000))
     (teardown! [b test node]
       (let [nodes (:nodes test)
             zk-nodes (zk-nodes nodes)
@@ -165,7 +168,17 @@
         (if (contains? bk-nodes node)
           (teardown-bk! node))
         (if (contains? zk-nodes node)
-          (teardown-zk! node))))))
+          (teardown-zk! node))))
+    db/LogFiles
+    (log-files [_ test node]
+      (let [nodes (:nodes test)
+            zk-nodes (zk-nodes nodes)
+            bk-nodes (bk-nodes nodes)]
+        (concat
+         (if (contains? bk-nodes node)
+           ["/opt/bookkeeper/logs/bookkeeper.stdout.log"])
+         (if (contains? zk-nodes node)
+           ["/var/log/zookeeper/zookeeper.log"]))))))
 
 (defn bk-test
   [opts]
