@@ -2,9 +2,9 @@ NODES="n1 n2 n3 n4 n5"
 
 ssh_config() {
     for n in $NODES; do
-	IP=$(sudo lxc-attach -n $n -- ip a show dev eth0 | \
-		    awk '/inet / { gsub(/\/.*/, "", $2); print $2 }')
-	cat <<EOF
+        IP=$(sudo lxc-attach -n $n -- ip a show dev eth0 | \
+                    awk '/inet / { gsub(/\/.*/, "", $2); print $2 }')
+        cat <<EOF
 Host $n
     user root
     StrictHostKeyChecking no
@@ -16,28 +16,28 @@ EOF
 
 nodes() {
     for n in $NODES; do
-	IP=$(sudo lxc-attach -n $n -- ip a show dev eth0 | \
-		    awk '/inet / { gsub(/\/.*/, "", $2); print $2 }')
-	echo $IP
+        IP=$(sudo lxc-attach -n $n -- ip a show dev eth0 | \
+                    awk '/inet / { gsub(/\/.*/, "", $2); print $2 }')
+        echo $IP
     done
 }
 
 build() {
     for n in $NODES; do
-	sudo lxc-create -n $n --template=debian
-	sudo lxc-start -n $n
+        sudo lxc-create -n $n --template=debian
+        sudo lxc-start -n $n
     done
 
     for n in $NODES; do
-	sudo lxc-attach -n $n -- ip a show dev eth0 | grep -q "inet "
-	while [ $? != 0 ]; do
-	    echo "$n not up, waiting"
-	    sleep 1;
-	done
+        sudo lxc-attach -n $n -- ip a show dev eth0 | grep -q "inet "
+        while [ $? != 0 ]; do
+            echo "$n not up, waiting"
+            sleep 1;
+        done
 
-	sudo lxc-attach -n $n -- mkdir /root/.ssh
+        sudo lxc-attach -n $n -- mkdir /root/.ssh
         cat ~/.ssh/id_rsa.pub | sudo lxc-attach -n $n --\
-				     sh -c "cat - > /root/.ssh/authorized_keys"
+                                     sh -c "cat - > /root/.ssh/authorized_keys"
     done
 
     sleep 5
