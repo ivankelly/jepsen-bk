@@ -25,24 +25,16 @@
 (def register-service-url
   "https://github.com/ivankelly/register-service/releases/download/v0.2.0/register-service-0.2.0-standalone.jar")
 (def register-service-port 3111)
+(def register-service-dir "/opt/register-service")
+(def register-service-log-file "/var/log/register-service.log")
+(def register-service-systemd-name "register-service")
 
-(defn zk-nodes
-  [nodes]
-  nodes)
-;  (set (take 3 nodes)))
+(def bookkeeper-systemd-name "bookkeeper")
+(def bookkeeper-dir "/opt/bookkeeper")
+(def bookkeeper-log-file "/var/log/bookkeeper.log")
 
-(defn zk-node?
-  [nodes node]
-  (contains? (zk-nodes nodes) node))
-
-(defn bk-nodes
-  [nodes]
-  nodes)
-;  (set (drop (min 3 (- (count nodes) 3)) nodes)))
-
-(defn bk-node?
-  [nodes node]
-  (contains? (bk-nodes nodes) node))
+(def zookeeper-data-dir "/var/lib/zookeeper")
+(def zookeeper-log-file "/var/log/zookeeper/zookeeper.log")
 
 (def debian-stretch
   (reify os/OS
@@ -97,21 +89,22 @@
 
 (defn- install-zk!
   "Install zookeeper on node"
-  [zk-nodes node]
+  [nodes node]
   (info node "installing zookeeper")
   (debian/install [:zookeeperd :zookeeper :zookeeper-bin])
-  (c/exec :echo (zoo-cfg zk-nodes) :> "/etc/zookeeper/conf/zoo.cfg")
-  (c/exec :mkdir :-p "/var/lib/zookeeper")
-  (c/exec :chown :-R "zookeeper:zookeeper" "/var/lib/zookeeper")
-  (c/exec :echo (get (zoo-cfg-ids zk-nodes) node) :> "/var/lib/zookeeper/myid")
+  (c/exec :echo (zoo-cfg nodes) :> "/etc/zookeeper/conf/zoo.cfg")
+  (c/exec :mkdir :-p zookeeper-data-dir)
+  (c/exec :chown :-R "zookeeper:zookeeper" zookeeper-data-dir)
+  (c/exec :echo (get (zoo-cfg-ids nodes) node) :>
+          (str zookeeper-data-dir "/myid"))
   (c/exec :service :zookeeper :restart))
 
 (defn- teardown-zk!
   "Tear down zookeeper on a node"
   [node]
   (c/exec :service :zookeeper :stop)
-  (c/exec :rm :-rf "/var/lib/zookeeper")
-  (c/exec :rm "/var/log/zookeeper/zookeeper.log"))
+  (c/exec :rm :-rf zookeeper-data-dir)
+  (c/exec :rm :-f zookeeper-log-file))
 
 (defn- zk-connect-string
   "Build a zookeeper connect string from a set of servers"
@@ -125,62 +118,98 @@
    (slurp (clojure.java.io/resource "bk_server.conf"))
    "\nzkServers=" (zk-connect-string zk-nodes) "\n"))
 
+(defn- create-systemd-unit-file!
+  [node name directory & args]
+  (let [localfile (str "/tmp/" node "-" name ".service")
+        remotefile (str "/etc/systemd/system/" name ".service")]
+    (spit
+     localfile
+     (str "[Unit]
+Description=" name "
+After=network.target
+
+[Service]
+ExecStart=" (str/join " " args) "
+WorkingDirectory=" directory "
+RestartSec=1s
+Restart=on-failure
+Type=simple
+
+[Install]
+WantedBy=multi-user.target
+"))
+    (c/upload localfile remotefile)))
+
+(def jepsen-start-file "/tmp/jepsen-start")
+
+(defn- mark-jepsen-start! []
+  (c/exec :touch jepsen-start-file))
+
+(defn- since-start []
+  (c/exec :stat :-c :%y jepsen-start-file :| :cut :-c :1-19))
+
+(defn- dump-journal [unit file]
+  (c/exec :journalctl :-u unit :-S (since-start) :> file))
+
 (defn- install-register-service!
   "Install register service on node"
-  [zk-nodes]
-  (c/exec :mkdir :-p "/opt/register-service/logs")
-  (binding [c/*dir* "/opt/register-service"]
+  [nodes node]
+  (info node "installing register service")
+  (binding [c/*dir* register-service-dir]
     (c/exec :curl :-L :-o "register-service.jar"
             register-service-url)
-    (cu/start-daemon! {:logfile "logs/register-service.stdout.log"
-                       :pidfile "logs/register-service.pid"
-                       :chdir "/opt/register-service"}
-                      "/usr/bin/java" "-jar" "register-service.jar"
-                      "-z" (zk-connect-string zk-nodes)
-                      "-p" (str register-service-port))))
+    (create-systemd-unit-file!
+     node register-service-systemd-name register-service-dir
+     "/usr/bin/java" "-jar" "register-service.jar"
+     "-z" (zk-connect-string nodes)
+     "-p" (str register-service-port)
+     "-t" (str 6000)) ; 6sec is minimum for default zk setup
+    (c/exec :systemctl :daemon-reload)
+    (c/exec :systemctl :start register-service-systemd-name)))
 
 (defn- teardown-register-service!
   "Tear down register service on a node"
   [node]
-  (binding [c/*dir* "/opt/register-service"]
-    (cu/stop-daemon! "logs/register-service.pid")
-    (c/exec :rm :-rf "/opt/register-service/logs")))
+  (binding [c/*dir* register-service-dir]
+    (c/exec :systemctl :stop register-service-systemd-name)
+    (dump-journal register-service-systemd-name
+                  register-service-log-file)))
 
 (defn- install-bk!
   "Install bookkeeper on node"
-  [version bk-nodes zk-nodes node]
+  [version nodes node]
   (info node "installing bookkeeper")
   (cu/install-tarball!
    node
    (str
     "http://apache.rediris.es/bookkeeper/bookkeeper-" version
     "/bookkeeper-server-" version "-bin.tar.gz")
-   "/opt/bookkeeper")
-  (binding [c/*dir* "/opt/bookkeeper"]
-    (c/exec :echo (bookie-server-cfg zk-nodes) :> "conf/bk_server.conf")
+   bookkeeper-dir)
+  (binding [c/*dir* bookkeeper-dir]
+    (c/exec :echo (bookie-server-cfg nodes) :> "conf/bk_server.conf")
     (c/exec "bin/bookkeeper" :shell :bookieformat
             :--deleteCookie :--force :--nonInteractive)
-    (if (= (first (sort bk-nodes)) node)
+    (if (= (first (sort nodes)) node)
       (c/exec "bin/bookkeeper" :shell :metaformat
               :--force :--nonInteractive))
     (c/exec :mkdir :-p "logs")
-    (cu/start-daemon! {:logfile "logs/bookkeeper.stdout.log"
-                       :pidfile "logs/bookie.pid"
-                       :chdir "/opt/bookkeeper"}
-                      "bin/bookkeeper" "bookie")))
+    (create-systemd-unit-file!
+     node bookkeeper-systemd-name
+     bookkeeper-dir (str bookkeeper-dir "/bin/bookkeeper") "bookie")
+    (c/exec :systemctl :daemon-reload)
+    (c/exec :systemctl :start bookkeeper-systemd-name)))
 
 (defn- teardown-bk!
   "Tear down bookkeeper on a node"
   [node]
   (info node "tearing down bookkeeper")
-  (binding [c/*dir* "/opt/bookkeeper"]
-    (cu/stop-daemon! "logs/bookie.pid"))
+  (c/exec :systemctl :stop bookkeeper-systemd-name)
   (try
     (c/exec :pkill :-f :-9 "bookkeeper")
     (catch RuntimeException e)) ; ignore
-  (c/exec :rm :-rf "/opt/bk-journal")
-  (c/exec :rm :-rf "/opt/bk-data")
-  (c/exec :rm :-rf "/opt/bookeeper/logs"))
+  (c/exec :rm :-rf (str bookkeeper-dir "/bk-journal"))
+  (c/exec :rm :-rf (str bookkeeper-dir "/bk-data"))
+  (dump-journal bookkeeper-systemd-name bookkeeper-log-file))
 
 (defn db
   "Install bookkeeper and zookeeper on nodes"
@@ -189,35 +218,31 @@
     db/DB
     (setup! [a test node]
       (info node "installing something" version)
-      (let [nodes (:nodes test)
-            zk-nodes (zk-nodes nodes)
-            bk-nodes (bk-nodes nodes)]
-        (if (contains? zk-nodes node)
-          (install-zk! zk-nodes node))
-        (if (contains? bk-nodes node)
-          (install-bk! version bk-nodes zk-nodes node))
-        (install-register-service! zk-nodes))
-      (Thread/sleep 10000))
+      (mark-jepsen-start!)
+      (let [nodes (:nodes test)]
+        (install-zk! nodes node)
+        (install-bk! version nodes node)
+        (install-register-service! nodes node))
+      (info node "all installed, waiting for up")
+      (loop [seconds 30]
+        (if (= seconds 0)
+          (Exception. "Register service not up")
+          (let [url (resource-url node register-service-port)
+                result (rs/get-value url)]
+            (if (f/failed? result)
+              (do
+                (Thread/sleep 1000)
+                (recur (- seconds 1)))
+              (info node "all up"))))))
     (teardown! [b test node]
-      (let [nodes (:nodes test)
-            zk-nodes (zk-nodes nodes)
-            bk-nodes (bk-nodes nodes)]
-        (teardown-register-service! node)
-        (if (contains? bk-nodes node)
-          (teardown-bk! node))
-        (if (contains? zk-nodes node)
-          (teardown-zk! node))))
+      (teardown-register-service! node)
+      (teardown-bk! node)
+      (teardown-zk! node))
     db/LogFiles
     (log-files [_ test node]
-      (let [nodes (:nodes test)
-            zk-nodes (zk-nodes nodes)
-            bk-nodes (bk-nodes nodes)]
-        (concat
-         ["/opt/register-service/logs/register-service.stdout.log"]
-         (if (contains? bk-nodes node)
-           ["/opt/bookkeeper/logs/bookkeeper.stdout.log"])
-         (if (contains? zk-nodes node)
-           ["/var/log/zookeeper/zookeeper.log"]))))))
+      [register-service-log-file
+       bookkeeper-log-file
+       zookeeper-log-file])))
 
 (defn r   [_ _] {:type :invoke, :f :read, :value nil})
 (defn w   [_ _] {:type :invoke, :f :write, :value (rand-int 5)})
