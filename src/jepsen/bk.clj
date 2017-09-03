@@ -23,7 +23,7 @@
             [failjure.core :as f]))
 
 (def register-service-url
-  "https://github.com/ivankelly/register-service/releases/download/v0.1.0/register-service-0.1.0-standalone.jar")
+  "https://github.com/ivankelly/register-service/releases/download/v0.2.0/register-service-0.2.0-standalone.jar")
 (def register-service-port 3111)
 
 (defn zk-nodes
@@ -220,44 +220,45 @@
            ["/var/log/zookeeper/zookeeper.log"]))))))
 
 (defn r   [_ _] {:type :invoke, :f :read, :value nil})
-(defn w   [_ _] {:type :invoke, :f :write, :value (rand-int 10000)})
+(defn w   [_ _] {:type :invoke, :f :write, :value (rand-int 5)})
+(defn cas [_ _] {:type :invoke, :f :cas, :value [(rand-int 5) (rand-int 5)]})
+
+(defn- ok-fail-or-unknown? [res]
+  (if (f/failed? res)
+    (cond
+      (= (f/message res) "Connection refused") :fail
+      :else :info)
+    (if res :ok :fail)))
 
 (defn client
   "A client to access the register service"
   [server]
-  (let [url (resource-url server register-service-port)
-        latest-seq (atom 0)]
+  (let [url (resource-url server register-service-port)]
     (reify client/Client
       (setup! [_ test node]
         (client node))
 
       (invoke! [this test op]
         (case (:f op)
-          :read (let [res (rs/get-value url @latest-seq)]
+          :read (let [res (rs/get-value url)]
                   (if (f/failed? res)
                     (do
-                      (assoc op :type :info :value (f/message res)))
+                      (assoc op :type :fail))
                     (let [seq-no (:seq res)]
-                      (swap! latest-seq (fn [prev]
-                                          (if (< prev seq-no)
-                                            seq-no prev)))
                       (assoc op :type :ok
-                             :value (:value res)
-                             :seq seq-no))))
+                             :value (:value res)))))
           :write (let [value (:value op)
-                       seq-no @latest-seq
-                       res (rs/check-and-set! url seq-no value)]
-                   (if (f/failed? res)
-                     (do
-                       (assoc op :type :info :value (f/message res)))
-                     (if res
-                       (do
-                         (swap! latest-seq (fn [prev]
-                                             (if (= prev seq-no)
-                                               (inc prev)
-                                               prev)))
-                         (assoc op :type :ok :seq seq-no))
-                       (assoc op :type :fail))))))
+                       res (rs/set-value! url value)]
+                   (assoc op :type (ok-fail-or-unknown? res)))
+          :cas   (let [[value value'] (:value op)
+                       get-res (rs/get-value url)]
+                   (if (or (f/failed? get-res)
+                           (not= (:value get-res) value))
+                     (assoc op :type :fail)
+                     (let [seq-no (:seq get-res)
+                           set-res (rs/set-value! url value' :seq-no seq-no)]
+                       (assoc op :type (ok-fail-or-unknown? set-res)))))))
+
       (teardown! [_ test]))))
 
 (defn bk-test
@@ -268,16 +269,16 @@
           :db (db "4.4.0")
           :client (client nil)
           :nemesis (nemesis/partition-random-halves)
-          :model  (model/register)
+          :model  (model/cas-register 0)
           :checker checker/linearizable
-          :generator (->> (gen/mix [r w])
+          :generator (->> (gen/mix [r w cas])
                           (gen/stagger 1)
                           (gen/nemesis
                            (gen/seq (cycle [(gen/sleep 5)
                                             {:type :info, :f :start}
-                                            (gen/sleep 5)
+                                            (gen/sleep (+ 5 (rand-int 5)))
                                             {:type :info, :f :stop}])))
-                          (gen/time-limit 300))}
+                          (gen/time-limit 60))}
          opts))
 
 (defn -main

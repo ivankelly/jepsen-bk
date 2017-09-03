@@ -6,5 +6,6 @@
   :main jepsen.bk
   :dependencies [[org.clojure/clojure "1.8.0"]
                  [jepsen "0.1.4"]
-                 [register-service/register-service "0.1.0-SNAPSHOT"]]
-  :aot [bookkeeper.mini-cluster])
+                 [register-service/register-service "0.2.0"]]
+  :aot [bookkeeper.mini-cluster]
+  :jvm-opts ["-Xmx32g"])
