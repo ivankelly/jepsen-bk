@@ -38,6 +38,7 @@ build() {
         sudo lxc-attach -n $n -- mkdir /root/.ssh
         cat ~/.ssh/id_rsa.pub | sudo lxc-attach -n $n --\
                                      sh -c "cat - > /root/.ssh/authorized_keys"
+        sudo lxc-attach -n $n -- apt-get update
     done
 
     sleep 5
@@ -58,8 +59,8 @@ build() {
 
 kill() {
     for n in $NODES; do
-	sudo lxc-stop -n $n
-	sudo lxc-destroy -n $n
+        sudo lxc-stop -n $n
+        sudo lxc-destroy -n $n
     done
 }
 
