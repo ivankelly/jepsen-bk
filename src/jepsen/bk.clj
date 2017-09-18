@@ -299,17 +299,26 @@ WantedBy=multi-user.target
           :model  (model/cas-register 0)
           :checker checker/linearizable
           :generator (->> (gen/mix [r w cas])
-                          (gen/stagger 1)
+                          (gen/stagger (/ 1 (:requests-per-second opts)))
                           (gen/nemesis
                            (gen/seq (cycle [(gen/sleep 5)
                                             {:type :info, :f :start}
                                             (gen/sleep (+ 5 (rand-int 5)))
                                             {:type :info, :f :stop}])))
-                          (gen/time-limit 60))}
+                          (gen/time-limit (:time-limit opts)))}
          opts))
+
+(def bk-opts
+  "Extra command line options for the bookkeeper test"
+  [[nil "--requests-per-second RPS"
+    "Number of requests to make per second"
+    :default 1
+    :parse-fn #(Long/parseLong %)
+    :validate [pos? "Must be positive"]]])
 
 (defn -main
   [& args]
-  (cli/run! (merge (cli/single-test-cmd {:test-fn bk-test})
+  (cli/run! (merge (cli/single-test-cmd {:test-fn bk-test
+                                         :opt-spec bk-opts})
                    (cli/serve-cmd))
             args))
