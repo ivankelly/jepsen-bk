@@ -155,6 +155,8 @@ WantedBy=multi-user.target
   "Install register service on node"
   [nodes node]
   (info node "installing register service")
+  (c/exec :mkdir :-p register-service-dir)
+
   (binding [c/*dir* register-service-dir]
     (c/exec :curl :-L :-o "register-service.jar"
             register-service-url)
