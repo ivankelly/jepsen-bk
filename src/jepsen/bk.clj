@@ -8,10 +8,12 @@
              [cli :as cli]
              [client :as client]
              [control :as c]
+             [core :as jepsen]
              [db :as db]
              [generator :as gen]
              [nemesis :as nemesis]
              [os :as os]
+             [store :as store]
              [tests :as tests]]
             [jepsen.util :refer [meh]]
             [jepsen.control.net :as net]
@@ -316,9 +318,35 @@ WantedBy=multi-user.target
     :parse-fn #(Long/parseLong %)
     :validate [pos? "Must be positive"]]])
 
+(defn check-run! [timestamp]
+  "Load a run and analyze with the linearizable checker"
+  (try
+    (jepsen/log-results
+     (let [test (store/load "bk" timestamp)
+           result (checker/check-safe
+                   checker/linearizable
+                   test
+                   (model/cas-register 0)
+                   (:history test))]
+       (info result)
+       (when (:name result) (store/save-2! result))
+       (when-not (:valid? (:results result))
+         (System/exit 1))))
+    (finally
+      (store/stop-logging!))))
+
+
+(def check-cmd
+  {"check" {:opt-spec [cli/help-opt
+                       [nil "--run-timestamp TIMESTAMP"
+                        "Timestamp of run to check"]]
+            :run (fn [{:keys [options]}]
+                   (check-run! (:run-timestamp options)))}})
+
 (defn -main
   [& args]
   (cli/run! (merge (cli/single-test-cmd {:test-fn bk-test
                                          :opt-spec bk-opts})
-                   (cli/serve-cmd))
+                   (cli/serve-cmd)
+                   check-cmd)
             args))
