@@ -1,0 +1,6 @@
+zone: europe-west1-b
+image: debian-9
+master_name: jepsen-master
+master_machine_type: n1-standard-8
+worker_names: jepsen-1,jepsen-2,jepsen-3,jepsen-4,jepsen-5
+worker_machine_type: n1-standard-2

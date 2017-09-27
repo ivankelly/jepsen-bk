@@ -1,0 +1,184 @@
+- name: Create instance(s)
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  tags: setup
+  vars_files:
+    - vars/gce.yaml
+    - vars/credentials.yaml
+  tasks:
+    - name: Launch master
+      gce:
+        zone: "{{ zone }}"
+        name: "{{ master_name }}"
+        preemptible: true
+        machine_type: "{{ master_machine_type }}"
+        image: "{{ image }}"
+        service_account_email: "{{ service_account_email }}"
+        credentials_file: "{{ credentials_file }}"
+        project_id: "{{ project_id }}"
+      register: jepsen_master
+
+    - name: Launch worker instances
+      gce:
+        zone: "{{ zone }}"
+        instance_names: "{{ worker_names }}"
+        preemptible: true
+        machine_type: "{{ master_machine_type }}"
+        image: "{{ image }}"
+        service_account_email: "{{ service_account_email }}"
+        credentials_file: "{{ credentials_file }}"
+        project_id: "{{ project_id }}"
+      register: jepsen_worker
+
+    - name: Ensure all instances are started
+      gce:
+        zone: "{{ zone }}"
+        instance_names: "{{ master_name }},{{ worker_names }}"
+        service_account_email: "{{ service_account_email }}"
+        credentials_file: "{{ credentials_file }}"
+        project_id: "{{ project_id }}"
+        state: started
+
+    - name: Wait for SSH to come up (master)
+      wait_for: host={{ item.public_ip }} port=22 delay=10 timeout=60
+      with_items: "{{ jepsen_master.instance_data }}"
+
+    - name: Add host to groupname (master)
+      add_host: hostname={{ item.public_ip }} groupname=master
+      with_items: "{{ jepsen_master.instance_data }}"
+
+    - name: Wait for SSH to come up (workers)
+      wait_for: host={{ item.public_ip }} port=22 delay=10 timeout=60
+      with_items: "{{ jepsen_worker.instance_data }}"
+
+    - name: Add host to groupname (workers)
+      add_host: hostname={{ item.public_ip }} groupname=workers
+      with_items: "{{ jepsen_worker.instance_data }}"
+
+    - name: Add host to groupname (workers_internal)
+      add_host: hostname={{ item.private_ip }} groupname=workers_internal
+      with_items: "{{ jepsen_worker.instance_data }}"
+
+- name: Setup master
+  hosts: master
+  connection: ssh
+  tags: setup
+  tasks:
+    - name: Delete old key
+      file:
+        path: ~/.ssh/id_rsa
+        state: absent
+    - name: Generate ssh key
+      command: ssh-keygen -t rsa -N "" -f ~/.ssh/id_rsa
+    - name: Get public key
+      command: cat ~/.ssh/id_rsa.pub
+      register: public_key
+    - name: Build nodes file
+      lineinfile:
+        path: ~/nodes.gce
+        create: true
+        line: "{{ item }}"
+      with_items: "{{ groups.workers_internal }}"
+    - name: Remove old known_hosts
+      file:
+        path: ~/.ssh/known_hosts
+        state: absent
+    - name: Add workers to known_hosts
+      shell: ssh-keyscan -t rsa "{{ item }}" >> ~/.ssh/known_hosts
+      with_items: "{{ groups.workers_internal }}"
+    - name: Install build dependencies
+      become: true
+      apt:
+        update_cache: yes
+        state: present
+        name: "{{ item }}"
+      with_items:
+        - openjdk-8-jdk
+        - git
+        - emacs-nox
+    - name: Install leiningen
+      become: true
+      get_url:
+        url: https://raw.githubusercontent.com/technomancy/leiningen/stable/bin/lein
+        dest: /usr/local/bin/lein
+        mode: 0755
+    - name: Clone repo
+      git:
+        repo: https://github.com/ivankelly/jepsen-bk
+        dest: ~/jepsen-bk
+
+- name: Setup workers
+  hosts: workers
+  connection: ssh
+  become: true
+  tags: setup
+  tasks:
+    - name: Enable root ssh (required for jepsen)
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^PermitRootLogin.*'
+        line: 'PermitRootLogin prohibit-password'
+    - name: Add master key for root
+      lineinfile:
+        path: /root/.ssh/authorized_keys
+        create: yes
+        mode: 0600
+        line: "{{ hostvars[groups['master'][0]]['public_key'].stdout }}"
+    - name: Reload ssh
+      systemd:
+        name: ssh
+        state: reloaded
+    - name: Install build dependencies
+      apt:
+        update_cache: yes
+        state: present
+        name: "{{ item }}"
+      with_items:
+        - openjdk-8-jdk
+
+- name: Run Jepsen
+  hosts: master
+  connection: ssh
+  tags: test
+  tasks:
+    - name: Run Jepsen
+      command: lein run test --nodes-file ~/nodes.gce --time-limit 30 --ssh-private-key ~/.ssh/id_rsa
+      args:
+        chdir: ~/jepsen-bk
+      ignore_errors: true
+      register: jepsen_result
+    - name: generate file results filename
+      shell: echo results-$(date -Iseconds) | sed 's/://g'
+      register: jepsen_result_filename
+    - name: Compress the results
+      command: "tar Jcf {{ jepsen_result_filename.stdout }}.tar.xz store"
+      args:
+        chdir: ~/jepsen-bk
+    - name: Download results
+      fetch:
+        flat: yes
+        src: "~/jepsen-bk/{{ jepsen_result_filename.stdout }}.tar.xz"
+        dest: "{{ jepsen_result_filename.stdout }}.tar.xz"
+    - debug: msg="Results downloaded to {{ jepsen_result_filename.stdout }}.tar.xz"
+    - name: Fail if jepsen failed
+      fail: msg="Jepsen failed, check the results tarball."
+      when: jepsen_result.rc != 0
+
+- name: Teardown
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars_files:
+    - vars/gce.yaml
+    - vars/credentials.yaml
+  tasks:
+    - name: Kill instances
+      gce:
+        zone: "{{ zone }}"
+        instance_names: "{{ master_name }},{{ worker_names }}"
+        service_account_email: "{{ service_account_email }}"
+        credentials_file: "{{ credentials_file }}"
+        project_id: "{{ project_id }}"
+        state: absent
+      tags: teardown
