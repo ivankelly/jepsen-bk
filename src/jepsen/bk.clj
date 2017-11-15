@@ -25,7 +25,7 @@
             [failjure.core :as f]))
 
 (def register-service-url
-  "https://github.com/ivankelly/register-service/releases/download/v0.2.0/register-service-0.2.0-standalone.jar")
+  "http://bleurgh.com/~ivan/register-service-0.2.1-SNAPSHOT-standalone.jar")
 (def register-service-port 3111)
 (def register-service-dir "/opt/register-service")
 (def register-service-log-file "/var/log/register-service.log")
@@ -185,9 +185,7 @@ WantedBy=multi-user.target
   (info node "installing bookkeeper")
   (cu/install-tarball!
    node
-   (str
-    "http://apache.rediris.es/bookkeeper/bookkeeper-" version
-    "/bookkeeper-server-" version "-bin.tar.gz")
+   "https://dist.apache.org/repos/dist/dev/bookkeeper/bookkeeper/bookkeeper-4.5.1-rc1/bookkeeper-server-4.5.1-bin.tar.gz"
    bookkeeper-dir)
   (binding [c/*dir* bookkeeper-dir]
     (c/exec :echo (bookie-server-cfg nodes) :> "conf/bk_server.conf")
