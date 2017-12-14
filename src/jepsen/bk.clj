@@ -25,7 +25,7 @@
             [failjure.core :as f]))
 
 (def register-service-url
-  "http://bleurgh.com/~ivan/register-service-0.2.1-SNAPSHOT-standalone-bk4.6.0rc0.jar")
+  "http://bleurgh.com/~ivan/register-service-0.2.1-SNAPSHOT-standalone-bk4.6.0rc1.jar")
 (def register-service-port 3111)
 (def register-service-dir "/opt/register-service")
 (def register-service-log-file "/var/log/register-service.log")
@@ -185,7 +185,7 @@ WantedBy=multi-user.target
   (info node "installing bookkeeper")
   (cu/install-tarball!
    node
-   "https://dist.apache.org/repos/dist/dev/bookkeeper/bookkeeper-4.6.0-rc0/bookkeeper-server-4.6.0-bin.tar.gz"
+   "https://dist.apache.org/repos/dist/dev/bookkeeper/bookkeeper-4.6.0-rc1/bookkeeper-server-4.6.0-bin.tar.gz"
    bookkeeper-dir)
   (binding [c/*dir* bookkeeper-dir]
     (c/exec :echo (bookie-server-cfg nodes) :> "conf/bk_server.conf")
