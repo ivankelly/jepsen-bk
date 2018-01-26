@@ -64,6 +64,8 @@
   hosts: master
   connection: ssh
   tags: setup
+  vars_files:
+    - vars/bookkeeper.yaml
   tasks:
     - name: Delete old key
       file:
@@ -103,10 +105,36 @@
         url: https://raw.githubusercontent.com/technomancy/leiningen/stable/bin/lein
         dest: /usr/local/bin/lein
         mode: 0755
-    - name: Clone repo
+    - name: Clone Jepsen BK
       git:
         repo: https://github.com/ivankelly/jepsen-bk
         dest: ~/jepsen-bk
+    - name: Clone register-service
+      git:
+        repo: https://github.com/ivankelly/register-service
+        dest: ~/register-service
+    - name: Update register-service bookkeeper client version
+      template:
+        src: extra-deps.clj.j2
+        dest: ~/register-service/extra-deps.clj
+      when: bookkeeper_version is defined
+    - name: Update register-service bookkeeper client repo
+      template:
+        src: extra-repos.clj.j2
+        dest: ~/register-service/extra-repos.clj
+      when: bookkeeper_repo is defined
+    - name: Build register server uberjar
+      command: lein uberjar
+      args:
+        chdir: ~/register-service
+    - name: Find uberjar
+      find:
+        paths: ~/register-service
+        patterns: "*-standalone.jar"
+        recurse: yes
+      register: find_result
+    - set_fact: uberjar="{{ find_result.files[0].path }}"
+    - debug: msg="{{ uberjar }}"
 
 - name: Setup workers
   hosts: workers
@@ -141,9 +169,16 @@
   hosts: master
   connection: ssh
   tags: test
+  vars_files:
+    - vars/bookkeeper.yaml
   tasks:
     - name: Run Jepsen
-      command: lein run test --nodes-file ~/nodes.gce --time-limit 30 --ssh-private-key ~/.ssh/id_rsa
+      command: >
+        lein run test
+        --nodes-file ~/nodes.gce
+        --time-limit 30 --ssh-private-key ~/.ssh/id_rsa
+        --bookkeeper-tarball {{ bookkeeper_tarball }}
+        --register-service-uberjar {{ uberjar }}
       args:
         chdir: ~/jepsen-bk
       ignore_errors: true

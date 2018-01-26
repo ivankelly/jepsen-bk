@@ -1,0 +1,8 @@
+# version of the bookkeeper client the register service should compile against
+# bookkeeper_version:
+
+# additional repo, which may be needed to find bookkeeper client version
+# bookkeeper_repo:
+
+# BookKeeper tarball to test. Can be a URL or local path
+bookkeeper_tarball: http://apache.rediris.es/bookkeeper/bookkeeper-4.6.0/bookkeeper-server-4.6.0-bin.tar.gz

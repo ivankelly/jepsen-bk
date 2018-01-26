@@ -136,6 +136,7 @@ After=network.target
 [Service]
 ExecStart=" (str/join " " args) "
 WorkingDirectory=" directory "
+KillMode=control-group
 RestartSec=1s
 Restart=on-failure
 Type=simple
