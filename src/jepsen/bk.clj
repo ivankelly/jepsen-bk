@@ -24,8 +24,11 @@
             [register-service.handler :refer [resource-url]]
             [failjure.core :as f]))
 
-(def register-service-url
+(def register-service-url-default
   "https://github.com/ivankelly/register-service/releases/download/v0.2.0/register-service-0.2.0-standalone.jar")
+(def bookkeeper-server-tarball-url-default
+  "http://apache.rediris.es/bookkeeper/bookkeeper-4.6.0/bookkeeper-server-4.6.0-bin.tar.gz")
+
 (def register-service-port 3111)
 (def register-service-dir "/opt/register-service")
 (def register-service-log-file "/var/log/register-service.log")
@@ -153,15 +156,22 @@ WantedBy=multi-user.target
 (defn- dump-journal [unit file]
   (c/exec :journalctl :-u unit :-S (since-start) :> file))
 
+(defn- download-or-upload [node uberjar]
+  (if (.exists (io/file uberjar))
+    (let [destfile (io/file register-service-dir "register-service.jar")
+          dest (str destfile)]
+      (info node "Local file " uberjar " uploading to " dest)
+      (c/upload uberjar dest))
+    (c/exec :curl :-L :-o "register-service.jar" uberjar)))
+
 (defn- install-register-service!
   "Install register service on node"
-  [nodes node]
+  [nodes node register-service-uberjar]
   (info node "installing register service")
   (c/exec :mkdir :-p register-service-dir)
 
   (binding [c/*dir* register-service-dir]
-    (c/exec :curl :-L :-o "register-service.jar"
-            register-service-url)
+    (download-or-upload node register-service-uberjar)
     (create-systemd-unit-file!
      node register-service-systemd-name register-service-dir
      "/usr/bin/java" "-jar" "register-service.jar"
@@ -179,15 +189,23 @@ WantedBy=multi-user.target
     (dump-journal register-service-systemd-name
                   register-service-log-file)))
 
+(defn- maybe-upload-bk [node bookkeeper-tarball]
+  (if (.exists (io/file bookkeeper-tarball))
+    (let [destfile (io/file cu/tmp-dir-base "bookkeeper.tgz")
+          dest (str destfile)
+          desturl (str (.toURL destfile))]
+      (info node "Local file " bookkeeper-tarball " uploading to " desturl)
+      (c/upload bookkeeper-tarball dest)
+      desturl)
+    bookkeeper-tarball))
+
 (defn- install-bk!
   "Install bookkeeper on node"
-  [version nodes node]
-  (info node "installing bookkeeper")
+  [version nodes node bookkeeper-tarball]
+  (info node "installing bookkeeper " bookkeeper-tarball)
   (cu/install-tarball!
    node
-   (str
-    "http://apache.rediris.es/bookkeeper/bookkeeper-" version
-    "/bookkeeper-server-" version "-bin.tar.gz")
+   (maybe-upload-bk node bookkeeper-tarball)
    bookkeeper-dir)
   (binding [c/*dir* bookkeeper-dir]
     (c/exec :echo (bookie-server-cfg nodes) :> "conf/bk_server.conf")
@@ -217,7 +235,7 @@ WantedBy=multi-user.target
 
 (defn db
   "Install bookkeeper and zookeeper on nodes"
-  [version]
+  [version bookkeeper-tarball register-service-uberjar]
   (reify
     db/DB
     (setup! [a test node]
@@ -225,8 +243,8 @@ WantedBy=multi-user.target
       (mark-jepsen-start!)
       (let [nodes (:nodes test)]
         (install-zk! nodes node)
-        (install-bk! version nodes node)
-        (install-register-service! nodes node))
+        (install-bk! version nodes node bookkeeper-tarball)
+        (install-register-service! nodes node register-service-uberjar))
       (info node "all installed, waiting for up")
       (loop [seconds 30]
         (if (= seconds 0)
@@ -295,7 +313,9 @@ WantedBy=multi-user.target
   (merge tests/noop-test
          {:name "bk"
           :os debian-stretch
-          :db (db "4.4.0")
+          :db (db "4.4.0"
+                  (:bookkeeper-tarball opts)
+                  (:register-service-uberjar opts))
           :client (client nil)
           :nemesis (nemesis/partition-random-halves)
           :model  (model/cas-register 0)
@@ -316,7 +336,12 @@ WantedBy=multi-user.target
     "Number of requests to make per second"
     :default 1
     :parse-fn #(Long/parseLong %)
-    :validate [pos? "Must be positive"]]])
+    :validate [pos? "Must be positive"]]
+   [nil "--bookkeeper-tarball TARBALL" "BookKeeper server tarball"
+    :default bookkeeper-server-tarball-url-default]
+   [nil "--register-service-uberjar JAR"
+    "Register service uberjar to use"
+    :default register-service-url-default]])
 
 (defn check-run! [timestamp]
   "Load a run and analyze with the linearizable checker"
